@@ -30,6 +30,17 @@ class UserRegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'password2': 'Passwords do not match'})
         return attrs
 
+    def validate_profileImage(self, value):
+        # Reject suspicious data URIs or very large payloads to avoid abuse
+        if not value:
+            return value
+        low = value.lower()
+        if 'data:text/html' in low or '<script' in low or 'javascript:' in low:
+            raise serializers.ValidationError('Invalid profile image')
+        if len(value) > 200000:
+            raise serializers.ValidationError('Profile image too large')
+        return value
+
     def create(self, validated_data):
         password = validated_data.pop('password')
         validated_data.pop('password2', None)
@@ -73,6 +84,32 @@ class RouteSerializer(serializers.ModelSerializer):
     def get_passengerDetails(self, obj):
         passengers = obj.passengers.all()
         return UserPublicSerializer(passengers, many=True).data
+
+    # Basic input validators to reduce risk of stored XSS / SSTI-like payloads
+    def _reject_bad(self, value):
+        if value is None:
+            return value
+        bad_substrings = ['<script', '</script>', '{{', '}}', '{%', '%}', 'javascript:', 'onerror=', 'onload=']
+        low = value.lower()
+        for bad in bad_substrings:
+            if bad in low:
+                raise serializers.ValidationError('Invalid characters in input')
+        return value
+
+    def validate_startLocation(self, value):
+        return self._reject_bad(value)
+
+    def validate_destination(self, value):
+        return self._reject_bad(value)
+
+    def validate_carModel(self, value):
+        return self._reject_bad(value)
+
+    def validate_description(self, value):
+        # Keep description length bounded and reject dangerous snippets
+        if value and len(value) > 2000:
+            raise serializers.ValidationError('Description too long')
+        return self._reject_bad(value)
 
 
 class BookingSerializer(serializers.ModelSerializer):

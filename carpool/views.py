@@ -1,8 +1,10 @@
 from django.db import transaction
+import os
 from django.contrib.auth import get_user_model
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -35,6 +37,28 @@ class HealthAPIView(APIView):
 
     def get(self, request):
         return Response({'status': 'ok'})
+
+
+class TokenObtainPairCookieView(TokenObtainPairView):
+    """Obtain JWT pair but set refresh token as HttpOnly cookie.
+
+    Returns only the `access` in the JSON body and stores `refresh` in a secure HttpOnly cookie.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        # If token pair issued, move refresh into HttpOnly cookie and return only access in body
+        if response.status_code == 200 and isinstance(response.data, dict) and 'refresh' in response.data:
+            refresh = response.data.get('refresh')
+            access = response.data.get('access')
+            resp = Response({'access': access}, status=response.status_code)
+            secure_flag = not (os.environ.get('DEBUG', 'True') == 'True')
+            # keep refresh cookie lifetime reasonably long (backend SIMPLE_JWT controls actual lifetime)
+            max_age = 7 * 24 * 60 * 60
+            resp.set_cookie('refresh', refresh, httponly=True, secure=secure_flag, samesite='Lax', max_age=max_age)
+            return resp
+        return response
 
 
 class RouteViewSet(viewsets.ModelViewSet):

@@ -2,6 +2,9 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import axios from 'axios';
 
+// Ensure cross-site requests include credentials so cookies (refresh) are accepted
+axios.defaults.withCredentials = true;
+
 export interface User {
   id: string;
   loginId: string;
@@ -22,9 +25,12 @@ function readTokens() {
   return { tokens: null, storage: null };
 }
 
-function writeTokens(tokens: { access: string; refresh: string }, rememberMe: boolean) {
+// Store only the short-lived access token in browser storage.
+// The refresh token should be issued as a HttpOnly cookie by the server.
+function writeTokens(tokens: { access: string; refresh?: string }, rememberMe: boolean) {
   const storage = rememberMe ? localStorage : sessionStorage;
-  storage.setItem(AUTH_KEY, JSON.stringify(tokens));
+  const payload = { access: tokens.access };
+  storage.setItem(AUTH_KEY, JSON.stringify(payload));
   if (!rememberMe) {
     localStorage.removeItem(AUTH_KEY);
   }
@@ -72,18 +78,43 @@ export const useUserStore = defineStore('user', () => {
       password: userData.password,
       password2: userData.passwordConfirm
     };
-    await axios.post(`${API_BASE}/auth/register/`, payload);
-    await login(userData.loginId, userData.password, true);
+    try {
+      await axios.post(`${API_BASE}/auth/register/`, payload);
+      await login(userData.loginId, userData.password, true);
+    } catch (err: any) {
+      if (err.response && err.response.data) {
+        // Attempt to extract validation messages
+        const data = err.response.data;
+        if (typeof data === 'string') throw new Error(data);
+        if (data.detail) throw new Error(data.detail);
+        // Flatten field errors
+        const msgs = Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+        throw new Error(msgs.join('; ') || 'Registration failed');
+      }
+      throw new Error(err.message || 'Registration failed');
+    }
   }
 
   async function login(loginId: string, password: string, rememberMe: boolean) {
-    const tokenResp = await axios.post(`${API_BASE}/auth/token/`, {
-      username: loginId,
-      password
-    });
-    writeTokens(tokenResp.data, rememberMe);
-    setAxiosAuth(tokenResp.data.access);
-    await fetchMe();
+    try {
+      const tokenResp = await axios.post(`${API_BASE}/auth/token/`, {
+        username: loginId,
+        password
+      });
+      writeTokens(tokenResp.data, rememberMe);
+      setAxiosAuth(tokenResp.data.access);
+      await fetchMe();
+    } catch (err: any) {
+      if (err.response) {
+        if (err.response.status === 401) {
+          throw new Error('Invalid username or password');
+        }
+        if (err.response.data && err.response.data.detail) {
+          throw new Error(err.response.data.detail);
+        }
+      }
+      throw new Error(err.message || 'Login failed');
+    }
   }
 
   async function fetchMe() {
